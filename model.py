@@ -2,7 +2,6 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from timm.models import trunc_normal_
 
 class DropPath(nn.Module):
     def __init__(self, drop_prob=None):
@@ -37,7 +36,12 @@ class HybridEmbed(nn.Module):
     def __init__(self, img_size=224, patch_size=16, in_chans=3, embed_dim=768,
                  i2t_out_chans=64, i2t_kernel=7, i2t_stride=2):
         super().__init__()
-        self.i2t = Image2Tokens()
+        self.i2t = Image2Tokens(
+            in_channels=in_chans,
+            out_channels=i2t_out_chans,
+            kernel_size=i2t_kernel,
+            stride=i2t_stride
+        )
         img_size = (img_size, img_size)
         patch_size = (patch_size, patch_size)
         self.img_size = img_size
@@ -292,14 +296,14 @@ class CeiT(nn.Module):
         self.head = nn.Linear(embed_dim, num_classes) if num_classes > 0 else nn.Identity()
 
         # 权重初始化
-        trunc_normal_(self.pos_embed, std=.02)
-        trunc_normal_(self.cls_token, std=.02)
-        trunc_normal_(self.pos_layer_embed, std=.02)
+        nn.init.trunc_normal_(self.pos_embed, std=.02)
+        nn.init.trunc_normal_(self.cls_token, std=.02)
+        nn.init.trunc_normal_(self.pos_layer_embed, std=.02)
         self.apply(self._init_weights)
 
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):
-            trunc_normal_(m.weight, std=.02)
+            nn.init.trunc_normal_(m.weight, std=.02)
             if isinstance(m, nn.Linear) and m.bias is not None:
                 nn.init.constant_(m.bias, 0)
         elif isinstance(m, nn.LayerNorm):
@@ -355,47 +359,55 @@ class CeiT(nn.Module):
         x = self.forward_features(x)
         x = self.head(x)
         return x
-
-
+    
 if __name__ == "__main__":
-    import torch
-
+    # 设置随机种子
+    torch.manual_seed(42)
+    
     # 创建模型
     model = CeiT(
         img_size=224,
         patch_size=16,
         in_chans=3,
-        num_classes=10,
+        num_classes=1000,
         embed_dim=768,
         depth=12,
         num_heads=12,
-        mlp_ratio=4.0,
+        mlp_ratio=4.,
+        qkv_bias=True,
         drop_rate=0.1,
-        attn_drop_rate=0.0,
-        drop_path_rate=0.1,
-        leff_local_size=3,
-        leff_with_bn=True
+        attn_drop_rate=0.1,
+        drop_path_rate=0.1
     )
-
-    # 打印模型信息
-    print("=" * 60)
-    print("CeiT 模型结构")
-    print("=" * 60)
-    print(model)
-    print("=" * 60)
-
-    # 计算参数量
+    
+    # 统计参数量
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"总参数量: {total_params:,}")
-    print(f"可训练参数量: {trainable_params:,}")
-    print(f"参数量(M): {total_params / 1e6:.2f}M")
-    print("=" * 60)
-
+    print(f"\n模型参数量: {total_params:,}")
+    print(f"可训练参数: {trainable_params:,}")
+    print(f"参数大小: {total_params * 4 / 1024 / 1024:.2f} MB")
+    
     # 测试前向传播
-    x = torch.randn(2, 3, 224, 224)
+    model.eval()
+    batch_size = 2
+    dummy_input = torch.randn(batch_size, 3, 224, 224)
+    
+    print(f"\n输入形状: {dummy_input.shape}")
+    
     with torch.no_grad():
-        output = model(x)
-    print(f"输入形状: {tuple(x.shape)}")
-    print(f"输出形状: {tuple(output.shape)}")
-    print("=" * 60)
+        output = model(dummy_input)
+    
+    print(f"输出形状: {output.shape}")
+    print(f"输出范围: [{output.min().item():.4f}, {output.max().item():.4f}]")
+    
+    # 测试梯度流
+    model.train()
+    output = model(dummy_input)
+    loss = output.sum()
+    loss.backward()
+    
+    # 检查梯度
+    has_grad = sum(1 for p in model.parameters() if p.grad is not None)
+    print(f"\n有梯度的参数数量: {has_grad}/{len(list(model.parameters()))}")
+    
+    print("\n✓ 模型测试通过！")
