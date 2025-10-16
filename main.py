@@ -48,10 +48,10 @@ test_loader = torch.utils.data.DataLoader(dataset=test_dataset,
                                            shuffle=False)
 
 ###############   Model   ##################
-cnn = CeiT(
+model = CeiT(
     img_size=28,
     patch_size=4,
-    in_chans=1,
+    in_channels=1,
     num_classes=10,
     embed_dim=192,
     depth=6,
@@ -63,16 +63,16 @@ cnn = CeiT(
     drop_path_rate=0.1
 )
 if args.cuda:
-    cnn.cuda()
-print(cnn)
+    model.cuda()
+print(model)
 
 ################   Loss   #################
 criterion = nn.CrossEntropyLoss()
-optimizer = torch.optim.Adam(cnn.parameters(), lr=args.lr)
+optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
 ################   Training   #############
 def train(epoch):
-    cnn.train()
+    model.train()
 
     for i, (images, labels) in enumerate(train_loader):
         if args.cuda:
@@ -81,7 +81,7 @@ def train(epoch):
 
         # forward
         optimizer.zero_grad()
-        outputs = cnn(images)
+        outputs = model(images)
 
         loss = criterion(outputs, labels)
 
@@ -93,7 +93,7 @@ def train(epoch):
                    %(epoch+1, args.epochs, i+1, len(train_dataset)//args.batch_size, loss.item()))
 
 def test():
-    cnn.eval()
+    model.eval()
     correct_train = 0
     correct_test = 0
 
@@ -104,7 +104,7 @@ def test():
                 images = images.cuda()
                 labels = labels.cuda()
 
-            outputs = cnn(images)
+            outputs = model(images)
             _, predicted = outputs.max(1)
             correct_train += predicted.eq(labels).sum().item()
 
@@ -114,7 +114,7 @@ def test():
                 images = images.cuda()
                 labels = labels.cuda()
 
-            outputs = cnn(images)
+            outputs = model(images)
             _, predicted = outputs.max(1)
             correct_test += predicted.eq(labels).sum().item()
 
@@ -128,4 +128,4 @@ def test():
 for epoch in range(args.epochs):
     train(epoch)
     test()
-torch.save(cnn.state_dict(), 'cnn.pkl')
+torch.save(model.state_dict(), 'model.pkl')
