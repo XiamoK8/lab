@@ -1,0 +1,74 @@
+(CeiT) PS C:\Workspace\Lab\CeiT_reproduce> python main.py
+CeiT(
+  (i2t): HybridEmbed(
+    (i2t): Image2Tokens(
+      (conv): Conv2d(1, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3))
+      (BN): BatchNorm2d(64, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)    
+      (relu): ReLU()
+      (maxpool): MaxPool2d(kernel_size=3, stride=2, padding=1, dilation=1, ceil_mode=False)    
+    )
+    (proj): Conv2d(64, 192, kernel_size=(4, 4), stride=(4, 4))
+  )
+  (pos_drop): Dropout(p=0.1, inplace=False)
+  (blocks): ModuleList(
+    (0): Block(
+      (norm1): LayerNorm((192,), eps=1e-05, elementwise_affine=True)
+      (norm2): LayerNorm((192,), eps=1e-05, elementwise_affine=True)
+      (drop_path): Identity()
+      (attn): Attention(
+        (qkv): Linear(in_features=192, out_features=576, bias=True)
+        (attn_drop): Dropout(p=0.1, inplace=False)
+        (proj): Linear(in_features=192, out_features=192, bias=True)
+        (proj_drop): Dropout(p=0.1, inplace=False)
+      )
+      (leff): LocallyEnhancedFeedForward(
+        (conv1): Conv2d(192, 768, kernel_size=(1, 1), stride=(1, 1))
+        (conv2): Conv2d(768, 768, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=768)
+        (conv3): Conv2d(768, 192, kernel_size=(1, 1), stride=(1, 1))
+        (act): GELU(approximate='none')
+        (bn1): BatchNorm2d(768, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (bn2): BatchNorm2d(768, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (bn3): BatchNorm2d(192, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      )
+    )
+    (1-5): 5 x Block(
+      (norm1): LayerNorm((192,), eps=1e-05, elementwise_affine=True)
+      (norm2): LayerNorm((192,), eps=1e-05, elementwise_affine=True)
+      (drop_path): DropPath()
+      (attn): Attention(
+        (qkv): Linear(in_features=192, out_features=576, bias=True)
+        (attn_drop): Dropout(p=0.1, inplace=False)
+        (proj): Linear(in_features=192, out_features=192, bias=True)
+        (proj_drop): Dropout(p=0.1, inplace=False)
+      )
+      (leff): LocallyEnhancedFeedForward(
+        (conv1): Conv2d(192, 768, kernel_size=(1, 1), stride=(1, 1))
+        (conv2): Conv2d(768, 768, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), groups=768)
+        (conv3): Conv2d(768, 192, kernel_size=(1, 1), stride=(1, 1))
+        (act): GELU(approximate='none')
+        (bn1): BatchNorm2d(768, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (bn2): BatchNorm2d(768, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (bn3): BatchNorm2d(192, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+      )
+    )
+  )
+  (lca): Block(
+    (norm1): LayerNorm((192,), eps=1e-05, elementwise_affine=True)
+    (norm2): LayerNorm((192,), eps=1e-05, elementwise_affine=True)
+    (drop_path): Identity()
+    (attnlca): AttentionLCA(
+      (qkv): Linear(in_features=192, out_features=576, bias=True)
+      (attn_drop): Dropout(p=0.1, inplace=False)
+      (proj): Linear(in_features=192, out_features=192, bias=True)
+      (proj_drop): Dropout(p=0.1, inplace=False)
+    )
+    (ff): MLP(
+      (fc1): Linear(in_features=192, out_features=768, bias=True)
+      (act): GELU(approximate='none')
+      (fc2): Linear(in_features=768, out_features=192, bias=True)
+      (drop): Dropout(p=0.1, inplace=False)
+    )
+  )
+  (norm): LayerNorm((192,), eps=1e-05, elementwise_affine=True)
+  (head): Linear(in_features=192, out_features=10, bias=True)
+)

@@ -66,6 +66,9 @@ if args.cuda:
     model.cuda()
 print(model)
 
+import pdb
+pdb.set_trace()
+
 ################   Loss   #################
 criterion = nn.CrossEntropyLoss()
 optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
