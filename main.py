@@ -2,7 +2,6 @@ import torch
 import torch.nn as nn
 import torchvision.datasets as datasets
 import torchvision.transforms as transforms
-import time
 import argparse
 from model import CeiT
 
@@ -66,9 +65,6 @@ if args.cuda:
     model.cuda()
 print(model)
 
-import pdb
-pdb.set_trace()
-
 ################   Loss   #################
 criterion = nn.CrossEntropyLoss()
 optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
@@ -131,4 +127,4 @@ def test():
 for epoch in range(args.epochs):
     train(epoch)
     test()
-torch.save(model.state_dict(), 'model.pkl')
+torch.save(model.state_dict(), '../model.pkl')
