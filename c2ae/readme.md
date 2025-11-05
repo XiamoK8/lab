@@ -1,0 +1,1 @@
+python main.py --data-dir "C:\Workspace\Datasets\cifar1" --num-known-classes 6 --epochs-stage1 20 --epochs-stage2 50 --alpha 0.82 --lr 0.0003
