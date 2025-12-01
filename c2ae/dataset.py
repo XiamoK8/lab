@@ -1,81 +1,120 @@
 import os
+from PIL import Image
 import torch
-from torchvision.datasets import ImageFolder
+from torch.utils.data import Dataset
 import torchvision.transforms as transforms
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 
-class OpenSetDataset(torch.utils.data.Dataset):
-    def __init__(self, root_dir, train=True, transform=None, known_classes=None):
-        self.root_dir = root_dir
+
+class DataFolderOpen(Dataset):
+    def __init__(self, root, transform=None):
+        super().__init__()
+        self.root = root
         self.transform = transform
-        self.known_classes = known_classes if known_classes else []
+        self.imgs = []
 
-        split = "train" if train else "test"
-        self.data_dir = os.path.join(root_dir, split)
+        for dir_name in sorted(os.listdir(self.root)):
+            class_path = os.path.join(self.root, dir_name)
+            if not os.path.isdir(class_path):
+                continue
+            try:
+                label = int(dir_name)
+            except ValueError:
+                continue
 
-        self.base_dataset = ImageFolder(
-            root=self.data_dir,
-            transform=transform
-        )
-
-        self.class_to_idx = self.base_dataset.class_to_idx
-        self.idx_to_class = {v: k for k, v in self.class_to_idx.items()}
-
-        self.indices = self._filter_known_classes()
-
-    def _filter_known_classes(self):
-        if not self.known_classes:
-            return list(range(len(self.base_dataset)))
-
-        known_cls_str = [str(cls) for cls in self.known_classes]
-
-        known_labels = [self.class_to_idx[cls_str] for cls_str in known_cls_str
-                       if cls_str in self.class_to_idx]
-
-        indices = []
-        for i, (_, label) in enumerate(self.base_dataset.samples):
-            if label in known_labels:
-                indices.append(i)
-        return indices
+            for img_name in os.listdir(class_path):
+                img_path = os.path.join(class_path, img_name)
+                if os.path.isdir(img_path):
+                    continue
+                self.imgs.append((img_path, label))
 
     def __len__(self):
-        return len(self.indices)
+        return len(self.imgs)
 
     def __getitem__(self, idx):
-        original_idx = self.indices[idx]
-        image, label = self.base_dataset[original_idx]
+        img_path, label = self.imgs[idx]
+        image = Image.open(img_path).convert("RGB")
+
+        if self.transform:
+            image = self.transform(image)
         return image, label
 
 
-def get_dataloaders(known_classes, batch_size, data_dir):
-    train_transform = transforms.Compose([
-        # transforms.RandomCrop(32, padding=4),
-        # transforms.RandomHorizontalFlip(p=0.5),
-        # transforms.Normalize(mean=[0.4914, 0.4822, 0.4465], 
-        #                      std=[0.2470, 0.2435, 0.2616])
-        transforms.ToTensor()
-    ])
+class CIFAR10_c2ae:
+    def __init__(
+        self,
+        known_classes,
+        batch_size=64,
+        train_root=os.path.join("..", "cifar10", "train"),
+        test_root=os.path.join("..", "cifar10", "test"),
+    ):
+        self.known_classes = list(known_classes)
+        self.unknown_classes = [i for i in range(10) if i not in self.known_classes]
+        self.batch_size = batch_size
+        self.train_root = train_root
+        self.test_root = test_root
 
-    test_transform = transforms.Compose([
-        transforms.ToTensor()
-    ])
+        self.transform_train = transforms.Compose(
+            [
+                transforms.RandomCrop(32, padding=4),
+                transforms.RandomHorizontalFlip(),
+                transforms.ToTensor(),
+                transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))
+            ]
+        )
 
-    train_dataset = OpenSetDataset(data_dir, train=True, transform=train_transform,
-                                   known_classes=known_classes)
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, 
-                              num_workers=0, drop_last=True)
+        self.transform_test = transforms.Compose(
+            [
+                transforms.ToTensor(),
+                transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+            ]
+        )
+        self._load_dataset()
 
-    test_known_dataset = OpenSetDataset(data_dir, train=False, transform=test_transform,
-                                        known_classes=known_classes)
-    test_known_loader = DataLoader(test_known_dataset, batch_size=batch_size, shuffle=False, 
-                                   num_workers=0)
+    def _load_dataset(self):
+        full_train_dataset = DataFolderOpen(
+            self.train_root,
+            transform=self.transform_train,
+        )
 
-    total_num_classes = 10
-    unknown_classes = [i for i in range(total_num_classes) if i not in known_classes]
-    
-    test_unknown_dataset = OpenSetDataset(data_dir, train=False, transform=test_transform,
-                                          known_classes=unknown_classes)
-    test_unknown_loader = DataLoader(test_unknown_dataset, batch_size=batch_size, shuffle=False, 
-                                     num_workers=0)
+        full_test_dataset = DataFolderOpen(
+            self.test_root,
+            transform=self.transform_test,
+        )
 
-    return train_loader, test_known_loader, test_unknown_loader
+        self._split_dataset(full_train_dataset, full_test_dataset)
+
+    def _split_dataset(self, full_train_dataset, full_test_dataset):
+        train_indices = [i for i in range(len(full_train_dataset))
+            if full_train_dataset.imgs[i][1] in self.known_classes]
+        train_dataset = Subset(full_train_dataset, train_indices)
+
+        known_test_indices = [i for i in range(len(full_test_dataset))
+            if full_test_dataset.imgs[i][1] in self.known_classes]
+        known_test_dataset = Subset(full_test_dataset, known_test_indices)
+        
+        unknown_test_indices = [i for i in range(len(full_test_dataset))
+            if full_test_dataset.imgs[i][1] in self.unknown_classes]
+        unknown_test_dataset = Subset(full_test_dataset, unknown_test_indices)
+
+        common_kwargs = dict(num_workers=4, pin_memory=True, persistent_workers=True)
+
+        self.train_loader = DataLoader(
+            train_dataset,
+            batch_size=self.batch_size,
+            shuffle=True,
+            drop_last=True,
+            **common_kwargs,
+        )
+        self.known_test_loader = DataLoader(
+            known_test_dataset,
+            batch_size=self.batch_size,
+            shuffle=False,
+            **common_kwargs,
+        )
+        self.unknown_test_loader = DataLoader(
+            unknown_test_dataset,
+            batch_size=self.batch_size,
+            shuffle=False,
+            **common_kwargs,
+        )
