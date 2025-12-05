@@ -3,7 +3,7 @@ import libs.data as data
 import methods.csgrl.net as net
 import tqdm
 import math
-import libs.metrics as metrics
+from libs.metrics import metric
 
 
 class csgrl:
@@ -32,26 +32,29 @@ class csgrl:
         lr_Generator = self.args.learn_rateG
 
 
-        self.opt_backbone = torch.optim.SGD(self.backbone.parameters(), lr= lr_backbone, weight_decay=5e-4)
-        self.opt_Generator = torch.optim.SGD(self.generator.parameters(), lr= lr_Generator, weight_decay=5e-4)
+        self.opt_backbone = torch.optim.SGD(self.backbone.parameters(), lr=lr_backbone, weight_decay=5e-4)
+        self.opt_Generator = torch.optim.SGD(self.generator.parameters(), lr=lr_Generator, weight_decay=5e-4)
         self.scheduler_D = net.SimpleLrScheduler(
-                   lr_backbone,
-                    milestones = self.args.milestones,
-                    lr_decay = self.args.lr_decay,
-                    warmup_epochs = self.args.warmup_epoch,
-                    steps_per_epoch = len(trainloader)
-                )
+            lr_backbone,
+            milestones=self.args.milestones,
+            lr_decay=self.args.lr_decay,
+            warmup_epochs=self.args.warmup_epoch,
+            steps_per_epoch=len(trainloader),
+        )
         self.scheduler_G = net.SimpleLrScheduler(
-                    lr_Generator,
-                    milestones = self.args.milestones,
-                    lr_decay = self.args.lr_decay,
-                    warmup_epochs = self.args.warmup_epoch,
-                    steps_per_epoch=len(trainloader)
-                )
-        
+            lr_Generator,
+            milestones=self.args.milestones,
+            lr_decay=self.args.lr_decay,
+            warmup_epochs=self.args.warmup_epoch,
+            steps_per_epoch=len(trainloader),
+        )
+
         # 评估
-        self.metrics = metrics.Metrics(self.args, self.classnum)
-        
+        self.metrics = metric(
+            num_classes=self.classnum + 1,
+            metric_list=getattr(self.args, "metrics_to_display", []),
+        )
+
     def train(self, trainloader, testloader):
         close_trainloader = trainloader[0]
 
@@ -59,8 +62,9 @@ class csgrl:
             train_results = self.train_epoch(close_trainloader, e)
             if e % self.args.test_interval == 0:
                 test_results = self.test(trainloader, testloader)
-            results = self.metrics.compute(train_results, test_results)
-            self.metrics.print_osr_results(results, e)
+                results = self._evaluate_epoch(train_results, test_results)
+                header = f"Epoch {e + 1}"
+                self.metrics.print_results(results, header=header)
 
 
     def test(self, trainloader, testloader):
@@ -101,6 +105,44 @@ class csgrl:
                 test_results['unknow_scores'].append(unknow_score.detach())
             
             return test_results
+
+    def _evaluate_epoch(self, train_results, test_results):
+        preds = torch.cat(test_results["predictions"]).detach().cpu()
+        gts = torch.cat(test_results["gts"]).detach().cpu()
+
+        mask_known = gts < self.classnum
+
+        # optional open-set detection scores (higher => more likely known)
+        open_scores = None
+        open_targets = None
+        if "know_scores" in test_results and "unknow_scores" in test_results:
+            know_scores = torch.cat(test_results["know_scores"]).detach().cpu()
+            unknow_scores = torch.cat(test_results["unknow_scores"]).detach().cpu()
+            open_scores = torch.cat([-know_scores, -unknow_scores])
+            open_targets = torch.cat(
+                [
+                    torch.ones_like(know_scores, dtype=torch.long),
+                    torch.zeros_like(unknow_scores, dtype=torch.long),
+                ]
+            )
+
+        extra = {}
+        num_samples = max(train_results.get("num_samples", 0), 1)
+        if "total_lossD" in train_results:
+            extra["train_lossD"] = float(train_results["total_lossD"] / num_samples)
+        if "total_lossG" in train_results:
+            extra["train_lossG"] = float(train_results["total_lossG"] / num_samples)
+
+        self.metrics.reset()
+        self.metrics.update(
+            preds=preds[mask_known],
+            targets=gts[mask_known],
+            open_scores=open_scores,
+            open_targets=open_targets,
+        )
+        results = self.metrics.compute()
+        results.update(extra)
+        return results
 
         
     def train_epoch(self, dataloader, epoch):

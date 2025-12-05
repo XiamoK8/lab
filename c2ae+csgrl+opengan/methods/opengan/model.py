@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
-from libs.metrics import Metrics
+from libs.metrics import metric
 from methods.opengan.net import (
     FeatureExtractor,
     Classifier,
@@ -12,7 +12,7 @@ from methods.opengan.net import (
 )
 
 
-class OpenGAN:
+class opengan:
     """
     Two-stage OpenGAN training:
       - Stage A: closed-set classifier pre-training.
@@ -48,11 +48,11 @@ class OpenGAN:
         )
 
         # Metrics helper
-        self.metrics = Metrics(
-            args=self.opt,
+        self.metrics = metric(
             num_classes=self.num_known_classes + 1,
-            device=self.device,
-        )
+            metric_list=getattr(self.opt, "metrics_to_display", []),
+            device=str(self.device),
+        ).to(self.device)
 
         # Data loaders will be provided at runtime
         self.closed_loader = None
@@ -243,7 +243,12 @@ class OpenGAN:
                 test_results["predictions"].append(preds.cpu())
                 test_results["gts"].append(labels.cpu())
 
-        results = self.metrics.compute(test_results)
+        preds = torch.cat(test_results["predictions"])
+        gts = torch.cat(test_results["gts"])
+
+        self.metrics.reset()
+        self.metrics.update(preds=preds, targets=gts)
+        results = self.metrics.compute()
 
         print("\n===== Test Results =====")
         self.metrics.print_results(results, header="[OpenGAN]")

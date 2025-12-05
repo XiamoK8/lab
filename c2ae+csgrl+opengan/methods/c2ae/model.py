@@ -1,12 +1,12 @@
 import torch
 import torch.nn as nn
 
-from libs.metrics import Metrics
+from libs.metrics import metric
 from libs.utils import calculate_threshold, compute_reconstruction_errors
 from methods.c2ae.network import C2AE
 
 
-class C2AEMethod():
+class c2ae():
     def __init__(self, args, latent_dim=128):
         self.args = args
         self.device = torch.device("cuda" if args.cuda else "cpu")
@@ -252,11 +252,31 @@ class C2AEMethod():
         print("=" * 60)
 
         results = self.test_openset(test_known_loader, test_unknown_loader)
-        metrics_evaluator = Metrics(self.args)
-        osr_metrics = metrics_evaluator.compute(
-            results["true_labels"],
-            results["cls_preds"],
-            results["errors"],
-            threshold,
+        true_labels = torch.as_tensor(results["true_labels"], dtype=torch.long, device=self.device)
+        cls_preds = torch.as_tensor(results["cls_preds"], dtype=torch.long, device=self.device)
+        errors = torch.as_tensor(results["errors"], dtype=torch.float32, device=self.device)
+        unknown_label = self.args.num_known_classes
+
+        predicted_labels = torch.where(
+            errors <= threshold,
+            cls_preds,
+            torch.full_like(cls_preds, unknown_label),
         )
-        Metrics.print_results(osr_metrics, header="Stage3 Evaluation")
+        open_targets = (true_labels != unknown_label).long()
+        open_scores = -errors
+
+        metrics_evaluator = metric(
+            num_classes=self.args.num_known_classes + 1,
+            metric_list=getattr(self.args, "metrics_to_display", []),
+            device=str(self.device),
+        ).to(self.device)
+        metrics_evaluator.reset()
+        metrics_evaluator.update(
+            preds=predicted_labels,
+            targets=true_labels,
+            open_scores=open_scores,
+            open_targets=open_targets,
+        )
+        osr_metrics = metrics_evaluator.compute()
+        osr_metrics["threshold"] = float(threshold)
+        metrics_evaluator.print_results(osr_metrics, header="Stage3 Evaluation")
