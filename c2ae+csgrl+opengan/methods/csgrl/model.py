@@ -1,250 +1,127 @@
-import torch
-import libs.data as data
-import methods.csgrl.net as net
-import tqdm
 import math
+import torch
+
+import methods.csgrl.network as net
 from libs.metrics import metric
 
 
 class csgrl:
     def __init__(self, args):
         self.args = args
-        self.args.cuda = not self.args.no_cuda and torch.cuda.is_available()
-
-        torch.manual_seed(self.args.seed)
-        if self.args.cuda:
-            torch.cuda.manual_seed(self.args.seed)
-
-        # 动态类别数计算（根据 convert_class 中非 -1 的唯一标签）
-        self.classnum = self.args.num_known_classes
-
-        opendata = data.Data(self.args)
-        dataloader, _ = opendata.get_dataloader()
-        trainloader = dataloader[0]
-        # 主模块
-        self.backbone = net.Backbone_main(self.classnum, args).cuda()  # 为选择输出，特征提取器和分类器均置于backbone_main里
-        self.generator = net.Generator_Class(self.classnum, nc= self.backbone.output_dim).cuda()
-        # loss
+        self.device = torch.device("cuda" if getattr(args, "cuda", False) else "cpu")
+        self.classnum = args.num_known_classes
+        self.backbone = net.Backbone_main(self.classnum, args).to(self.device)
+        self.generator = net.Generator_Class(self.classnum, nc=self.backbone.output_dim).to(self.device)
         self.crt = net.CSGRLCriterion(args.arch_type)
-        self.crtG = net.CriterionG() 
-        # lr
-        lr_backbone = self.args.learn_rate
-        lr_Generator = self.args.learn_rateG
+        self.crtG = net.CriterionG()
+        self.opt_backbone = torch.optim.SGD(self.backbone.parameters(), lr=args.learn_rate, weight_decay=5e-4)
+        self.opt_Generator = torch.optim.SGD(self.generator.parameters(), lr=args.learn_rateG, weight_decay=5e-4)
+        self.scheduler_D = None
+        self.scheduler_G = None
 
+    def train_epoch_stage1(self, loader, epoch):
+        self.backbone.train()
+        total_loss = 0.0
+        for i, data in enumerate(loader):
+            image, label = data[0].to(self.device), data[1].to(self.device)
+            self.opt_backbone.zero_grad()
+            _, close_er = self.backbone(image, train_unknown=False)
+            lossD = self.crt(close_er, label)
+            lossD.backward()
+            self.opt_backbone.step()
+            lrD = self.scheduler_D.get_lr(epoch, i)
+            for g in self.opt_backbone.param_groups:
+                g["lr"] = lrD
+            total_loss += lossD.item()
+        avg = total_loss / max(len(loader), 1)
+        print(f"csgrl stage1 epoch {epoch + 1}/{self.args.epochs_stage1} loss {avg:.4f}")
 
-        self.opt_backbone = torch.optim.SGD(self.backbone.parameters(), lr=lr_backbone, weight_decay=5e-4)
-        self.opt_Generator = torch.optim.SGD(self.generator.parameters(), lr=lr_Generator, weight_decay=5e-4)
-        self.scheduler_D = net.SimpleLrScheduler(
-            lr_backbone,
-            milestones=self.args.milestones,
-            lr_decay=self.args.lr_decay,
-            warmup_epochs=self.args.warmup_epoch,
-            steps_per_epoch=len(trainloader),
-        )
-        self.scheduler_G = net.SimpleLrScheduler(
-            lr_Generator,
-            milestones=self.args.milestones,
-            lr_decay=self.args.lr_decay,
-            warmup_epochs=self.args.warmup_epoch,
-            steps_per_epoch=len(trainloader),
-        )
-
-        # 评估
-        self.metrics = metric(
-            num_classes=self.classnum + 1,
-            metric_list=getattr(self.args, "metrics_to_display", []),
-        )
-
-    def train(self, trainloader, testloader):
-        close_trainloader = trainloader[0]
-
-        for e in range(self.args.epoch_num):
-            train_results = self.train_epoch(close_trainloader, e)
-            if e % self.args.test_interval == 0:
-                test_results = self.test(trainloader, testloader)
-                results = self._evaluate_epoch(train_results, test_results)
-                header = f"Epoch {e + 1}"
-                self.metrics.print_results(results, header=header)
-
-
-    def test(self, trainloader, testloader):
-        self.backbone.eval()
-
-        test_results = {
-        'predictions': [],
-        'gts': [],
-        'know_scores': [],
-        'unknow_scores': []
-    }
-
-        with torch.no_grad():
-            for d in tqdm.tqdm(testloader, leave= False):
-                image = d[0].cuda(non_blocking=True)
-                gt = d[1].cuda(non_blocking=True)
-
-                x_a, close_er = self.backbone(image, train_unknown = True)
-
-                
-                # pred = self.crt(close_er, pred=True)
-                # 误差分离
-                pred = self.crt(close_er[:, :-1, :, :], pred=True)  # logits→argmax 在crt内部
-                know_er = close_er[:, :-1]            # [B, num_class, H, W]
-                unknow_er = close_er[:, -1]           # [B, H, W]
-
-                # 每个样本取其预测类别对应的误差
-                batch_idx = torch.arange(pred.shape[0], device=pred.device)
-                know_max_er = know_er[batch_idx, pred]   # [B, H, W]
-
-                # 计算平均误差分数（mean over spatial dims）
-                know_score = know_max_er.mean(dim=[1, 2])    # [B]
-                unknow_score = unknow_er.mean(dim=[1, 2])    # [B]
-
-                test_results['predictions'].append(pred.detach())
-                test_results['gts'].append(gt.detach())
-                test_results['know_scores'].append(know_score.detach())
-                test_results['unknow_scores'].append(unknow_score.detach())
-            
-            return test_results
-
-    def _evaluate_epoch(self, train_results, test_results):
-        preds = torch.cat(test_results["predictions"]).detach().cpu()
-        gts = torch.cat(test_results["gts"]).detach().cpu()
-
-        mask_known = gts < self.classnum
-
-        # optional open-set detection scores (higher => more likely known)
-        open_scores = None
-        open_targets = None
-        if "know_scores" in test_results and "unknow_scores" in test_results:
-            know_scores = torch.cat(test_results["know_scores"]).detach().cpu()
-            unknow_scores = torch.cat(test_results["unknow_scores"]).detach().cpu()
-            open_scores = torch.cat([-know_scores, -unknow_scores])
-            open_targets = torch.cat(
-                [
-                    torch.ones_like(know_scores, dtype=torch.long),
-                    torch.zeros_like(unknow_scores, dtype=torch.long),
-                ]
-            )
-
-        extra = {}
-        num_samples = max(train_results.get("num_samples", 0), 1)
-        if "total_lossD" in train_results:
-            extra["train_lossD"] = float(train_results["total_lossD"] / num_samples)
-        if "total_lossG" in train_results:
-            extra["train_lossG"] = float(train_results["total_lossG"] / num_samples)
-
-        self.metrics.reset()
-        self.metrics.update(
-            preds=preds[mask_known],
-            targets=gts[mask_known],
-            open_scores=open_scores,
-            open_targets=open_targets,
-        )
-        results = self.metrics.compute()
-        results.update(extra)
-        return results
-
-        
-    def train_epoch(self, dataloader, epoch):
+    def train_epoch_stage2(self, loader, epoch):
         self.backbone.train()
         self.generator.train()
-
-        train_results = {
-        'predictions': [],
-        'gts': [],
-        'total_lossD': 0,
-        'total_lossG': 0,
-        'num_samples': 0
-    }
-        
-        for i, data in enumerate(tqdm.tqdm(dataloader, leave= False)):
-            image, label = data[0].cuda(), data[1].cuda()
+        total_lossD = 0.0
+        total_lossG = 0.0
+        for i, data in enumerate(loader):
+            image, label = data[0].to(self.device), data[1].to(self.device)
             batch_size = image.size(0)
-            train_results['num_samples'] += batch_size
-            train_results['gts'].append(label)
-        
-            # ======================== 训练重建模型 ========================
-            if (self.args.epoch_num - epoch) > 10:  #前期只训练 B + R 
-                lossD, close_er = self.train_epoch_stage1(image, label, epoch, i)   
-            else:
-                # ======================== 训练生成模型 ========================
-                lossD, batch_lossG, close_er = self.train_epoch_stage2(image, label, epoch, i)
-                
-                train_results['total_lossG'] += batch_lossG.item()
-            # 结果存储
-            train_results['total_lossD'] += lossD.item() * batch_size
-            pred = self.crt(close_er, pred=True)
-            train_results['predictions'].append(pred.detach())
+            max_dis = [0] * self.classnum
+            noise = [torch.randn(math.ceil(self.args.batch_size / self.classnum), 100, 1, 1, device=self.device) for _ in range(self.classnum)]
+            self.opt_Generator.zero_grad()
+            gen_data, gen_label = self.generator(noise)
+            _, close_er = self.backbone(image, train_unknown=False)
+            max_dis = net.class_maximum_distance(-close_er.reshape([close_er.shape[0], close_er.shape[1], -1]).mean(dim=2), label, self.classnum, max_dis)
+            _, gen_close_er = self.backbone(gen_data, isgen=True, train_unknown=False)
+            lossG1 = self.crt(gen_close_er, gen_label)
+            score = -torch.squeeze(gen_close_er)
+            lossG2 = self.crtG(score, gen_label, max_dis, self.args.margin)
+            lossG = lossG1 + lossG2
+            lrG = self.scheduler_G.get_lr(epoch, i)
+            for g in self.opt_Generator.param_groups:
+                g["lr"] = lrG
+            lossG.backward()
+            self.opt_Generator.step()
+            self.opt_backbone.zero_grad()
+            gen_data, gen_label = self.generator(noise)
+            _, gen_close_er = self.backbone(gen_data.detach(), isgen=True, train_unknown=True)
+            lossD1 = self.crt(close_er, label)
+            lossD2 = self.crt(gen_close_er, (torch.ones(gen_label.shape[0], device=self.device) * self.classnum))
+            lossD = lossD1 + lossD2
+            lrD = self.scheduler_D.get_lr(epoch, i)
+            for g in self.opt_backbone.param_groups:
+                g["lr"] = lrD
+            lossD.backward()
+            self.opt_backbone.step()
+            total_lossD += lossD.item() * batch_size
+            total_lossG += lossG.item() * self.args.batch_size
+        avgD = total_lossD / max(len(loader) * self.args.batch_size, 1)
+        avgG = total_lossG / max(len(loader) * self.args.batch_size, 1)
+        print(f"csgrl stage2 epoch {epoch + 1}/{self.args.epochs_stage2} lossD {avgD:.4f} lossG {avgG:.4f}")
 
-        return train_results
-        
-    def train_epoch_stage1(self,image, label, epoch, i):
-        self.opt_backbone.zero_grad()
-        
-        x, close_er = self.backbone(image, train_unknown = False)
-        lossD = self.crt(close_er, label)
+    def train(self, train_loader, test_loader=None):
+        self.scheduler_D = net.SimpleLrScheduler(self.args.learn_rate, milestones=self.args.milestones, lr_decay=self.args.lr_decay, warmup_epochs=self.args.warmup_epoch, steps_per_epoch=len(train_loader))
+        self.scheduler_G = net.SimpleLrScheduler(self.args.learn_rateG, milestones=self.args.milestones, lr_decay=self.args.lr_decay, warmup_epochs=self.args.warmup_epoch, steps_per_epoch=len(train_loader))
+        for epoch in range(self.args.epochs_stage1):
+            self.train_epoch_stage1(train_loader, epoch)
+        for epoch in range(self.args.epochs_stage2):
+            self.train_epoch_stage2(train_loader, epoch)
 
-        lossD.backward()
-        self.opt_backbone.step()
+    def test(self, test_loader):
+        self.backbone.eval()
+        scores = []
+        targets = []
+        known_loader, unknown_loader = test_loader
+        with torch.no_grad():
+            for images, _ in known_loader:
+                images = images.to(self.device)
+                _, close_er = self.backbone(images, train_unknown=True)
+                pred = self.crt(close_er[:, :-1, :, :], pred=True)
+                know_er = close_er[:, :-1]
+                unknow_er = close_er[:, -1]
+                batch_idx = torch.arange(pred.shape[0], device=pred.device)
+                know_max_er = know_er[batch_idx, pred]
+                know_score = know_max_er.mean(dim=[1, 2])
+                unknow_score = unknow_er.mean(dim=[1, 2])
+                scores.append(torch.cat([-know_score, -unknow_score], dim=0))
+                targets.append(torch.cat([torch.ones_like(know_score, dtype=torch.long), torch.zeros_like(unknow_score, dtype=torch.long)], dim=0))
+            for images, _ in unknown_loader:
+                images = images.to(self.device)
+                _, close_er = self.backbone(images, train_unknown=True)
+                pred = self.crt(close_er[:, :-1, :, :], pred=True)
+                know_er = close_er[:, :-1]
+                unknow_er = close_er[:, -1]
+                batch_idx = torch.arange(pred.shape[0], device=pred.device)
+                know_max_er = know_er[batch_idx, pred]
+                know_score = know_max_er.mean(dim=[1, 2])
+                unknow_score = unknow_er.mean(dim=[1, 2])
+                scores.append(torch.cat([-know_score, -unknow_score], dim=0))
+                targets.append(torch.cat([torch.ones_like(know_score, dtype=torch.long), torch.zeros_like(unknow_score, dtype=torch.long)], dim=0))
+        scores = torch.cat(scores)
+        targets = torch.cat(targets)
+        thr = torch.median(scores[targets == 1]) if (targets == 1).any() else torch.tensor(0.5, device=self.device)
+        m = metric(metric_list=getattr(self.args, "metrics_to_display", []), threshold=float(thr)).to(self.device)
+        m.update(scores, targets)
+        m.print_results()
 
-            # 更新 Backbone 学习率
-        lrD = self.scheduler_D.get_lr(epoch, i)
-        for g in self.opt_backbone.param_groups:
-            g['lr'] = lrD
-        return lossD, close_er
-    
-    def train_epoch_stage2(self,image, label, epoch, i ):
-        batch_lossG = torch.tensor(0.0).cuda() 
-
-        # 生成数据准备
-        max_dis = [0] * self.classnum   # 初始化每个类别的最大距离数组
-        noise = []
-        for c in range(self.classnum):
-            noise.append(torch.randn(math.ceil(self.args.batch_size / self.classnum), 100, 1, 1).cuda()) 
-        
-        # ======================== 训练生成模型 ========================  
-        self.opt_Generator.zero_grad()
-
-        gen_data, gen_label = self.generator(noise)  # 为每个类别生成噪声，通过生成器生成样本和标签
-        x, close_er = self.backbone(image, train_unknown = False)  
-        max_dis = net.class_maximum_distance(
-            -close_er.reshape([close_er.shape[0], close_er.shape[1], -1]).mean(dim=2), label, self.classnum, max_dis)  # 计算并更新每个类别的最大距离
-        gen_x, gen_close_er = self.backbone(gen_data, isgen=True, train_unknown = False)
-        
-        # loss
-        lossG1 = self.crt(gen_close_er, gen_label)  # 分类损失
-        score = -torch.squeeze(gen_close_er)
-        lossG2 = self.crtG(score, gen_label, max_dis, self.args.margin)  #  基于距离的特定损失
-        lossG = lossG1 + lossG2
-
-        # 更新学习率
-        lrG = self.scheduler_G.get_lr(epoch, i)
-        for g in self.opt_Generator.param_groups:
-            g['lr'] = lrG
-
-        lossG.backward()
-        self.opt_Generator.step()
-
-        # ======================== 训练重建模型 ========================
-        self.opt_backbone.zero_grad()
-
-        gen_data, gen_label = self.generator(noise)
-        gen_x, gen_close_er = self.backbone(gen_data.detach(), isgen=True ,train_unknown = True )
-        
-        # loss
-        lossD1 = self.crt(close_er, label)
-        lossD2 = self.crt(gen_close_er, (torch.ones(gen_label.shape[0]) * self.classnum).cuda())
-        lossD = lossD1 + lossD2
-        lossD.backward()
-        self.opt_backbone.step()
-
-        # 更新 Backbone 学习率
-        lrD = self.scheduler_D.get_lr(epoch, i)
-        for g in self.opt_backbone.param_groups:
-            g['lr'] = lrD
-        batch_lossG += lossG.item() * self.args.batch_size  
-
-        return lossD, batch_lossG, close_er
-
-        
-
+    def main(self, train_loader, test_loader):
+        self.train(train_loader, test_loader)
+        self.test(test_loader)

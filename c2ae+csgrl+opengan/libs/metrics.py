@@ -3,48 +3,35 @@ from torchmetrics import AUROC, F1Score, Metric
 
 
 class metric(Metric):
-    full_state_update = False
-
-    def __init__(self, num_classes, metric_list=None, average="macro", device=None):
+    def __init__(self, metric_list=None, threshold=0.5, *args, **kwargs):
         super().__init__()
         self.metric_list = (
-            {m.strip().upper() for m in metric_list if m and m.strip()}
-            if metric_list
-            else {"F1", "AUROC"}
+            {m.strip().upper() for m in metric_list} if metric_list else {"F1", "AUROC"}
         )
-        self.f1_score = F1Score(task="multiclass", num_classes=num_classes, average=average)
+        self.threshold = threshold
+        self.f1_score = F1Score(task="binary")
         self.auroc = AUROC(task="binary")
-        self._has_open = False
-        if device:
-            self.to(device)
 
-    def update(self, preds, targets, open_scores=None, open_targets=None):
-        preds_t = torch.as_tensor(preds)
-        targets_t = torch.as_tensor(targets)
-        self.f1_score.update(preds_t, targets_t)
-        if open_scores is not None and open_targets is not None:
-            self.auroc.update(torch.as_tensor(open_scores), torch.as_tensor(open_targets))
-            self._has_open = True
+    def update(self, preds, targets):
+        preds_t = torch.as_tensor(preds, dtype=torch.float32)
+        targets_t = torch.as_tensor(targets, dtype=torch.long)
+        bin_preds = (preds_t > self.threshold).long()
+        self.f1_score.update(bin_preds, targets_t)
+        self.auroc.update(preds_t, targets_t)
 
     def compute(self):
         results = {}
         if "F1" in self.metric_list:
-            results["f1"] = float(self.f1_score.compute().item())
-        if "AUROC" in self.metric_list and self._has_open:
-            results["auroc"] = float(self.auroc.compute().item())
+            results["F1"] = self.f1_score.compute()
+        if "AUROC" in self.metric_list:
+            results["AUROC"] = self.auroc.compute()
         return results
 
     def reset(self):
-        super().reset()
         self.f1_score.reset()
         self.auroc.reset()
-        self._has_open = False
 
-    def print_results(self, results: dict, header: str | None = None):
-        if not results:
-            return
-        parts = []
-        for k, v in results.items():
-            parts.append(f"{k}: {v:.4f}" if isinstance(v, float) else f"{k}: {v}")
-        msg = " | ".join(parts)
-        print(f"{header} | {msg}" if header else msg)
+    def print_results(self):
+        result = self.compute()
+        for key, value in result.items():
+            print(f"{key}:{value.item():.4f}")

@@ -32,14 +32,10 @@ class Data:
 
     def get_dataloader(self):
         train_idx = [i for i, (_, lbl) in enumerate(self.train_set.samples) if lbl in self.known]
-        open_idx = [i for i, (_, lbl) in enumerate(self.train_set.samples) if lbl not in self.known]
         known_test_idx = [i for i, (_, lbl) in enumerate(self.test_set.samples) if lbl in self.known]
         unknown_test_idx = [i for i, (_, lbl) in enumerate(self.test_set.samples) if lbl not in self.known]
         batch = getattr(self.args, "batch_size", 128)
         train_loader = DataLoader(OpenDataset(Subset(self.train_set, train_idx), self.known, self.unknown_label), batch_size=batch, shuffle=True, num_workers=4, pin_memory=True, drop_last=True)
-        open_loader = DataLoader(OpenDataset(Subset(self.train_set, open_idx), self.known, self.unknown_label), batch_size=batch, shuffle=True, num_workers=4, pin_memory=True) if open_idx else train_loader
         test_known_loader = DataLoader(OpenDataset(Subset(self.test_set, known_test_idx), self.known, self.unknown_label), batch_size=batch, shuffle=False, num_workers=4, pin_memory=True)
         test_unknown_loader = DataLoader(OpenDataset(Subset(self.test_set, unknown_test_idx), self.known, self.unknown_label), batch_size=batch, shuffle=False, num_workers=4, pin_memory=True)
-        if getattr(self.args, "model_name", "").lower() in ("csgrl", "opengan"):
-            return (train_loader, open_loader), DataLoader(torch.utils.data.ConcatDataset([test_known_loader.dataset, test_unknown_loader.dataset]), batch_size=batch, shuffle=False, num_workers=4, pin_memory=True)
         return train_loader, (test_known_loader, test_unknown_loader)

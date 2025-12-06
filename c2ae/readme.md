@@ -1,1 +1,1 @@
-python main.py --data-dir "D:\Workspace\lab\cifar10" --batch-size 128 --num-known-classes 6 --epochs-stage1 20 --epochs-stage2 50 --alpha 0.9 --lr 0.0003
+python main.py --data-dir "D:\Datasets\cifar10" --batch-size 128 --num-known-classes 6 --epochs-stage1 20 --epochs-stage2 50 --alpha 0.9 --lr 0.0003

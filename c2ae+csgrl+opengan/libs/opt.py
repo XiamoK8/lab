@@ -30,10 +30,8 @@ class options:
         self.parser.add_argument("--s_w", type=float, default=0.2)
         self.parser.add_argument("--seed", type=int, default=1, metavar="S")
         self.parser.add_argument("--task_type", type=str, default="OSR")
-        self.parser.add_argument("--test_interval", type=int, default=1)
         self.parser.add_argument("--total-num-classes", type=int, default=10, dest="total_num_classes")
         self.parser.add_argument("--warmup_epoch", type=int, default=0)
-
         self.args = None
 
     def parse(self):
