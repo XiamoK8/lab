@@ -38,13 +38,13 @@ class basemodel:
             for images, _ in known_loader:
                 images = images.to(self.device)
                 prob = torch.softmax(self.model(images), dim=1).max(dim=1).values
-                scores.append(prob.cpu())
-                targets.append(torch.ones_like(prob, dtype=torch.long).cpu())
+                scores.append(prob)
+                targets.append(torch.ones_like(prob, dtype=torch.long))
             for images, _ in unknown_loader:
                 images = images.to(self.device)
                 prob = torch.softmax(self.model(images), dim=1).max(dim=1).values
-                scores.append(prob.cpu())
-                targets.append(torch.zeros_like(prob, dtype=torch.long).cpu())
+                scores.append(prob)
+                targets.append(torch.zeros_like(prob, dtype=torch.long))
         scores = torch.cat(scores)
         targets = torch.cat(targets)
         m = metric(metric_list=getattr(self.args, "metrics_to_display", []))
