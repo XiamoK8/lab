@@ -36,6 +36,8 @@ class Data:
         unknown_test_idx = [i for i, (_, lbl) in enumerate(self.test_set.samples) if lbl not in self.known]
         batch = getattr(self.args, "batch_size", 128)
         train_loader = DataLoader(OpenDataset(Subset(self.train_set, train_idx), self.known, self.unknown_label), batch_size=batch, shuffle=True, num_workers=4, pin_memory=True, drop_last=True)
-        test_known_loader = DataLoader(OpenDataset(Subset(self.test_set, known_test_idx), self.known, self.unknown_label), batch_size=batch, shuffle=False, num_workers=4, pin_memory=True)
-        test_unknown_loader = DataLoader(OpenDataset(Subset(self.test_set, unknown_test_idx), self.known, self.unknown_label), batch_size=batch, shuffle=False, num_workers=4, pin_memory=True)
-        return train_loader, (test_known_loader, test_unknown_loader)
+        test_loader = DataLoader(OpenDataset(self.test_set, self.known, self.unknown_label), batch_size=batch, shuffle=False, num_workers=4, pin_memory=True)
+        return train_loader, test_loader
+        # test_known_loader = DataLoader(OpenDataset(Subset(self.test_set, known_test_idx), self.known, self.unknown_label), batch_size=batch, shuffle=False, num_workers=4, pin_memory=True)
+        # test_unknown_loader = DataLoader(OpenDataset(Subset(self.test_set, unknown_test_idx), self.known, self.unknown_label), batch_size=batch, shuffle=False, num_workers=4, pin_memory=True)
+        # return train_loader, (test_known_loader, test_unknown_loader)

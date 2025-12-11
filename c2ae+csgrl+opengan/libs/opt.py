@@ -9,10 +9,10 @@ class options:
         self.parser.add_argument("--arch_type", type=str, default="softmax_avg")
         self.parser.add_argument("--batch-size", type=int, default=128, metavar="N")
         self.parser.add_argument("--classification_hidden_dim", type=int, default=256)
-        self.parser.add_argument("--data-dir", type=str, default="./data", metavar="DIR")
+        self.parser.add_argument("--data-dir", type=str, default="./data/cifar10", metavar="DIR")
         self.parser.add_argument("--epoch_num", type=int, default=50)
-        self.parser.add_argument("--epochs-stage1", type=int, default=20, metavar="N")
-        self.parser.add_argument("--epochs-stage2", type=int, default=50, metavar="N")
+        self.parser.add_argument("--epochs-stage1", type=int, default=1, metavar="N")
+        self.parser.add_argument("--epochs-stage2", type=int, default=10, metavar="N")
         self.parser.add_argument("--gamma", type=float, default=0.1)
         self.parser.add_argument("--learn_rate", type=float, default=0.4)
         self.parser.add_argument("--learn_rateG", type=float, default=0.4)
@@ -32,6 +32,7 @@ class options:
         self.parser.add_argument("--task_type", type=str, default="OSR")
         self.parser.add_argument("--total-num-classes", type=int, default=10, dest="total_num_classes")
         self.parser.add_argument("--warmup_epoch", type=int, default=0)
+        self.parser.add_argument("--test_interval", type=int, default=1)
         self.args = None
 
     def parse(self):

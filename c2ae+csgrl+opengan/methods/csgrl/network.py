@@ -1,16 +1,7 @@
 import math
-import tqdm
-import numpy as np
 import torch
 import torch.nn.functional as F
 import torch.nn as nn
-import torch.utils.data as data
-import random
-import time
-from torchvision.transforms import transforms
-import logging
-import os
-from torchmetrics.classification import AUROC, F1Score
 
 class BasicBlock(nn.Module):
     def __init__(self, in_planes, out_planes, stride, dropRate=0.0, activate_before_residual=False):
@@ -110,21 +101,11 @@ class WideResNetBackbone(nn.Module):
         return out
 
 
-def sim_conv_layer(input_channel, output_channel, kernel_size=1, padding=0, use_activation=True):
-    if use_activation:
-        res = nn.Sequential(
-            nn.Conv2d(input_channel, output_channel, kernel_size, padding=padding, bias=False),
-            nn.Tanh())
-    else:
-        res = nn.Conv2d(input_channel, output_channel, kernel_size, padding=padding, bias=False)
-    return res
-
-
 class AutoEncoder(nn.Module):
 
     def __init__(self, inchannel, hidden_layers, latent_chan):
         super().__init__()
-        layer_block = sim_conv_layer
+        layer_block = self.sim_conv_layer
         self.latent_size = latent_chan
 
         if latent_chan > 0: # 自编码器
@@ -158,6 +139,15 @@ class AutoEncoder(nn.Module):
             return output, latent   #返回重建结果和潜在编码
         else:
             return self.center, self.center
+        
+    def sim_conv_layer(input_channel, output_channel, kernel_size=1, padding=0, use_activation=True):
+        if use_activation:
+            res = nn.Sequential(
+                nn.Conv2d(input_channel, output_channel, kernel_size, padding=padding, bias=False),
+                nn.Tanh())
+        else:
+            res = nn.Conv2d(input_channel, output_channel, kernel_size, padding=padding, bias=False)
+        return res
 
 
 class CSGRLClassifier(nn.Module):
@@ -196,66 +186,20 @@ class Backbone_main(nn.Module):
         self.backbone = WideResNetBackbone( 40, 4, 0, -1)  # 特征提取器
         self.output_dim = self.backbone.output_dim
         self.cat_cls = CSGRLClassifier(self.backbone.output_dim, num_classes, self.args)  # 分类器
-
-    def forward(self, x, feature_only=False, isgen=False, train_unknown = False):
-        if not isgen:
-            x = self.backbone(x)
-        if feature_only:  # 非生成数据才通过 backbone 提取特征
-            return x
-        xcls_raw = self.cat_cls(x, train_unknown )  # 分类输出
-        # x_com = self.reco(x)
-        return x, xcls_raw
-
-
-class CSGRLCriterion(nn.Module):
-
-    def get_onehot_label(self, y, clsnum):
-        y = torch.reshape(y, [-1, 1]).long()
-        return torch.zeros(y.shape[0], clsnum).cuda().scatter_(1, y, 1)  
-    #　在维度1（列维度）上，根据y中的索引位置填充1，实现one-hot编码
-
-    def __init__(self, avg_order):
-        super().__init__()
-        self.avg_order = {"avg_softmax": 1, "softmax_avg": 2}[avg_order]
-        # 1: 先平均池化再softmax   , 2: 先softmax再平均池化
         self.avg_pool = nn.AdaptiveAvgPool2d((1, 1))
 
-
-    def forward(self, x, y=None, prob=False, pred=False):
-        if self.avg_order == 1:
-            g = self.avg_pool(x).view(x.shape[0], -1)
-            g = torch.softmax(g, dim=1)
-        elif self.avg_order == 2:
-            g = torch.softmax(x, dim=1)
-            g = self.avg_pool(g).view(x.size(0), -1)
-        if prob: return g  # 概率
-        if pred: return torch.argmax(g, dim=1)  # 最大值作为预测结果
-        loss = -torch.sum(self.get_onehot_label(y, g.shape[1]) * torch.log(g), dim=1).mean()
-        # if torch.isinf(loss) or torch.isnan(loss):
-        #     print(1)
-        return loss  # 交叉熵损失
-
-
-class CriterionG(nn.Module):
-
-    def __init__(self):
-        super().__init__()
-        self.sig =  nn.Sigmoid()
-
-    def forward(self, close_er, y, max_dis, margin):
-        loss = 0
-        j = 0
-        for i in range(len(max_dis)):  # 遍历每个类别
-            index = torch.where(y==i)[0]  #找到当前批次中属于类别i的样本索引
-            if len(index) == 0:
-                continue
-            gap = self.sig(close_er[index,i] - max_dis[i] - margin)  
-            # close_er[index,i］所有该类别样本对该类的重建误差
-            gap = torch.clamp(gap,1e-7,1-1e-7)  #　差距值限制在[1e-7, 1-1e-7]范围内，防止出现０或１
-            loss += -torch.log(gap).mean()
-            j += 1   # 实际处理的类别数量
-        loss /= j
-        return loss
+    def forward(self, x, isgen=False, train_unknown = False, is_test = False):
+        if not isgen:
+            x = self.backbone(x)
+        restruct_error = self.cat_cls(x, train_unknown)  # 分类输出
+        if is_test:
+            known_restruct_error = restruct_error[:, 0:-1, :, :]
+        else:
+            known_restruct_error = restruct_error
+        logit = self.avg_pool(known_restruct_error).view(x.size(0), -1)
+        g = torch.softmax(logit, dim=1)
+        pred = torch.argmax(g, dim=1)
+        return restruct_error, logit, pred
 
     
 class Generator_Class(nn.Module):
@@ -326,83 +270,7 @@ class Generator(nn.Module):
         return self.main(input)
 
 
-class SimpleLrScheduler:
-    """
-    支持 warmup + multi-step decay
-    """
-    def __init__(self, init_lr, milestones=None, lr_decay=0.1, warmup_epochs=0, steps_per_epoch=1):
-        self.init_lr = init_lr
-        self.milestones = milestones or []
-        self.lr_decay = lr_decay
-        self.warmup_steps = warmup_epochs * steps_per_epoch
-        self.steps_per_epoch = steps_per_epoch
 
-    def get_lr(self, epoch, step):
-        tstep = epoch * self.steps_per_epoch + step
-        # ---- Warmup ----
-        if self.warmup_steps > 0 and tstep <= self.warmup_steps:
-            return self.init_lr * tstep / max(1, self.warmup_steps)
-        # ---- Multi-step decay ----
-        lr = self.init_lr
-        for m in self.milestones:
-            if epoch >= m:
-                lr *= self.lr_decay
-        return lr
-
-def class_maximum_distance( cls_er, y, clsnum, max_dis):
-    for i in range(clsnum):
-        index = torch.where(y == i)[0]
-        if index.numel() == 0:
-            continue
-        temp = torch.max(cls_er[index, i]).detach()  #计算当前批次中类别i的最大值：
-        if max_dis[i] < temp:
-            max_dis[i] = temp
-
-    return max_dis
-    
-def setup_logger(log_file):
-    """
-    初始化日志系统：控制台 + 文件同时输出
-    会立即创建日志文件（即使还没写入内容）
-    """
-    logger = logging.getLogger('TrainLogger')
-    logger.setLevel(logging.INFO)
-
-    # 避免重复添加 handler
-    if not logger.handlers:
-        # 创建日志文件夹
-        log_dir = os.path.dirname(log_file)
-        if log_dir and not os.path.exists(log_dir):
-            os.makedirs(log_dir, exist_ok=True)
-
-        #  确保日志文件存在（立即创建）
-        open(log_file, 'a', encoding='utf-8').close()
-
-        # 文件输出
-        file_handler = logging.FileHandler(log_file, mode='a', encoding='utf-8')
-        file_handler.setLevel(logging.INFO)
-
-        # 控制台输出
-        console_handler = logging.StreamHandler()
-        console_handler.setLevel(logging.INFO)
-
-        # 日志格式
-        formatter = logging.Formatter(
-            '%(asctime)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S'
-        )
-        file_handler.setFormatter(formatter)
-        console_handler.setFormatter(formatter)
-
-        # 添加两个 handler
-        logger.addHandler(file_handler)
-        logger.addHandler(console_handler)
-
-        # 初始日志信息
-        logger.info(f"Logger initialized. Writing logs to: {os.path.abspath(log_file)}")
-
-    return logger
-alph_pre = [0, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95,
-           1]
 
 
 
